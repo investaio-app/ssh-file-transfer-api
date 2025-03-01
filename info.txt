@@ -1,0 +1,709 @@
+# Step 1: Set up Go environment (if needed)
+# For Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install golang-go
+
+# For macOS with Homebrew
+brew install go
+
+# Step 2: Create project directory structure
+mkdir -p ssh-file-transfer-api
+cd ssh-file-transfer-api
+mkdir -p cmd/server
+mkdir -p internal/api
+mkdir -p internal/config
+mkdir -p internal/models
+mkdir -p internal/ssh
+
+# Step 3: Initialize Go module
+go mod init github.com/yourusername/ssh-file-transfer-api
+
+# Step 4: Install dependencies
+go get github.com/gin-gonic/gin
+go get github.com/joho/godotenv
+go get github.com/pkg/sftp
+go get golang.org/x/crypto/ssh
+
+# Step 5: Create .env file
+cat > .env << EOF
+PORT=8080
+SSH_USERNAME=your_ssh_username
+SSH_KEY_PATH=/path/to/your/private_key
+# Uncomment and use if using password authentication instead of key
+# SSH_PASSWORD=your_ssh_password
+EOF
+
+# Step 6: Create main.go file
+cat > cmd/server/main.go << EOF
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/joho/godotenv"
+	"github.com/yourusername/ssh-file-transfer-api/internal/api"
+	"github.com/yourusername/ssh-file-transfer-api/internal/config"
+)
+
+func main() {
+	// Load environment variables from .env file
+	if err := godotenv.Load(); err != nil {
+		log.Println("Warning: No .env file found, using environment variables")
+	}
+
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load configuration: %v", err)
+	}
+
+	// Initialize and start the server
+	server := api.NewServer(cfg)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Printf("Starting server on port %s", port)
+	if err := server.Run(fmt.Sprintf(":%s", port)); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
+}
+EOF
+
+# Step 7: Create config.go
+cat > internal/config/config.go << EOF
+package config
+
+import (
+	"errors"
+	"os"
+	"strconv"
+	"time"
+)
+
+// Config holds all configuration for the application
+type Config struct {
+	// Server configuration
+	ServerPort        string
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	MaxRequestSize    int64
+	RateLimitRequests int
+	RateLimitDuration time.Duration
+
+	// SSH related configuration
+	SSHKeyPath  string
+	SSHUsername string
+	SSHPassword string
+}
+
+// Load loads configuration from environment variables
+func Load() (*Config, error) {
+	// Set defaults
+	cfg := &Config{
+		ServerPort:        "8080",
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		MaxRequestSize:    50 * 1024 * 1024, // 50MB
+		RateLimitRequests: 100,
+		RateLimitDuration: time.Minute,
+		SSHKeyPath:        os.Getenv("SSH_KEY_PATH"),
+		SSHUsername:       os.Getenv("SSH_USERNAME"),
+		SSHPassword:       os.Getenv("SSH_PASSWORD"),
+	}
+
+	// Override defaults with environment variables if provided
+	if port := os.Getenv("PORT"); port != "" {
+		cfg.ServerPort = port
+	}
+
+	if readTimeout := os.Getenv("READ_TIMEOUT"); readTimeout != "" {
+		if duration, err := strconv.Atoi(readTimeout); err == nil {
+			cfg.ReadTimeout = time.Duration(duration) * time.Second
+		}
+	}
+
+	if writeTimeout := os.Getenv("WRITE_TIMEOUT"); writeTimeout != "" {
+		if duration, err := strconv.Atoi(writeTimeout); err == nil {
+			cfg.WriteTimeout = time.Duration(duration) * time.Second
+		}
+	}
+
+	if maxRequestSize := os.Getenv("MAX_REQUEST_SIZE"); maxRequestSize != "" {
+		if size, err := strconv.ParseInt(maxRequestSize, 10, 64); err == nil {
+			cfg.MaxRequestSize = size
+		}
+	}
+
+	if rateLimitRequests := os.Getenv("RATE_LIMIT_REQUESTS"); rateLimitRequests != "" {
+		if requests, err := strconv.Atoi(rateLimitRequests); err == nil {
+			cfg.RateLimitRequests = requests
+		}
+	}
+
+	if rateLimitDuration := os.Getenv("RATE_LIMIT_DURATION"); rateLimitDuration != "" {
+		if duration, err := strconv.Atoi(rateLimitDuration); err == nil {
+			cfg.RateLimitDuration = time.Duration(duration) * time.Second
+		}
+	}
+
+	// Validate required configurations
+	if cfg.SSHKeyPath == "" && cfg.SSHPassword == "" {
+		return nil, errors.New("either SSH_KEY_PATH or SSH_PASSWORD must be provided")
+	}
+
+	if cfg.SSHUsername == "" {
+		return nil, errors.New("SSH_USERNAME is required")
+	}
+
+	return cfg, nil
+}
+EOF
+
+# Step 8: Create models.go
+cat > internal/models/models.go << EOF
+package models
+
+import "time"
+
+// FileTransferRequest defines the request payload for file transfer
+type FileTransferRequest struct {
+	TargetHost     string \`json:"target_host" binding:"required"\`
+	TargetPort     int    \`json:"target_port" binding:"required"\`
+	SourceFilePath string \`json:"source_file_path" binding:"required"\`
+	TargetFilePath string \`json:"target_file_path" binding:"required"\`
+	Username       string \`json:"username,omitempty"\`
+	Password       string \`json:"password,omitempty"\`
+	PrivateKeyPath string \`json:"private_key_path,omitempty"\`
+}
+
+// FileTransferResponse defines the response payload for file transfer
+type FileTransferResponse struct {
+	ID           string    \`json:"id"\`
+	Status       string    \`json:"status"\`
+	SourceFile   string    \`json:"source_file"\`
+	TargetFile   string    \`json:"target_file"\`
+	TargetHost   string    \`json:"target_host"\`
+	BytesWritten int64     \`json:"bytes_written"\`
+	StartTime    time.Time \`json:"start_time"\`
+	EndTime      time.Time \`json:"end_time"\`
+	Duration     string    \`json:"duration"\`
+	Error        string    \`json:"error,omitempty"\`
+}
+
+// FileTransferStatus represents a status update for a file transfer operation
+type FileTransferStatus struct {
+	ID              string    \`json:"id"\`
+	Status          string    \`json:"status"\`
+	PercentComplete float64   \`json:"percent_complete"\`
+	BytesTransferred int64     \`json:"bytes_transferred"\`
+	StartTime       time.Time \`json:"start_time"\`
+	LastUpdated     time.Time \`json:"last_updated"\`
+	Error           string    \`json:"error,omitempty"\`
+}
+
+// APIError represents an error response
+type APIError struct {
+	Code    int    \`json:"code"\`
+	Message string \`json:"message"\`
+	Details string \`json:"details,omitempty"\`
+}
+EOF
+
+# Step 9: Create ssh client.go
+cat > internal/ssh/client.go << EOF
+package ssh
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
+	"github.com/yourusername/ssh-file-transfer-api/internal/models"
+)
+
+// Client manages SSH connections and file transfers
+type Client struct {
+	config *ssh.ClientConfig
+}
+
+// NewClient creates a new SSH client
+func NewClient(username, password, keyPath string) (*Client, error) {
+	config := &ssh.ClientConfig{
+		User:            username,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // In production, use ssh.FixedHostKey or ssh.KnownHosts
+		Timeout:         30 * time.Second,
+	}
+
+	// Use password if provided
+	if password != "" {
+		config.Auth = []ssh.AuthMethod{
+			ssh.Password(password),
+		}
+	} else if keyPath != "" {
+		// Otherwise use private key
+		key, err := os.ReadFile(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("unable to read private key: %v", err)
+		}
+
+		signer, err := ssh.ParsePrivateKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse private key: %v", err)
+		}
+
+		config.Auth = []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		}
+	} else {
+		return nil, fmt.Errorf("either password or keyPath must be provided")
+	}
+
+	return &Client{config: config}, nil
+}
+
+// TransferFile transfers a file to a remote server
+func (c *Client) TransferFile(req models.FileTransferRequest) (*models.FileTransferResponse, error) {
+	startTime := time.Now()
+	
+	// Override client config with request-specific authentication if provided
+	config := c.config
+	if req.Username != "" || req.Password != "" || req.PrivateKeyPath != "" {
+		config = &ssh.ClientConfig{
+			User:            req.Username,
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         30 * time.Second,
+		}
+		
+		if req.Password != "" {
+			config.Auth = []ssh.AuthMethod{
+				ssh.Password(req.Password),
+			}
+		} else if req.PrivateKeyPath != "" {
+			key, err := os.ReadFile(req.PrivateKeyPath)
+			if err != nil {
+				return nil, fmt.Errorf("unable to read private key: %v", err)
+			}
+
+			signer, err := ssh.ParsePrivateKey(key)
+			if err != nil {
+				return nil, fmt.Errorf("unable to parse private key: %v", err)
+			}
+
+			config.Auth = []ssh.AuthMethod{
+				ssh.PublicKeys(signer),
+			}
+		}
+	}
+
+	// Connect to SSH server
+	addr := fmt.Sprintf("%s:%d", req.TargetHost, req.TargetPort)
+	conn, err := ssh.Dial("tcp", addr, config)
+	if err != nil {
+		return &models.FileTransferResponse{
+			Status:    "failed",
+			SourceFile: req.SourceFilePath,
+			TargetFile: req.TargetFilePath,
+			TargetHost: req.TargetHost,
+			StartTime: startTime,
+			EndTime:   time.Now(),
+			Duration:  time.Since(startTime).String(),
+			Error:     fmt.Sprintf("failed to connect to SSH server: %v", err),
+		}, err
+	}
+	defer conn.Close()
+
+	// Create SFTP client
+	sftpClient, err := sftp.NewClient(conn)
+	if err != nil {
+		return &models.FileTransferResponse{
+			Status:    "failed",
+			SourceFile: req.SourceFilePath,
+			TargetFile: req.TargetFilePath,
+			TargetHost: req.TargetHost,
+			StartTime: startTime,
+			EndTime:   time.Now(),
+			Duration:  time.Since(startTime).String(),
+			Error:     fmt.Sprintf("failed to create SFTP client: %v", err),
+		}, err
+	}
+	defer sftpClient.Close()
+
+	// Open local file
+	srcFile, err := os.Open(req.SourceFilePath)
+	if err != nil {
+		return &models.FileTransferResponse{
+			Status:    "failed",
+			SourceFile: req.SourceFilePath,
+			TargetFile: req.TargetFilePath,
+			TargetHost: req.TargetHost,
+			StartTime: startTime,
+			EndTime:   time.Now(),
+			Duration:  time.Since(startTime).String(),
+			Error:     fmt.Sprintf("failed to open source file: %v", err),
+		}, err
+	}
+	defer srcFile.Close()
+
+	// Create target directory if it doesn't exist
+	targetDir := filepath.Dir(req.TargetFilePath)
+	if err := sftpClient.MkdirAll(targetDir); err != nil {
+		return &models.FileTransferResponse{
+			Status:    "failed",
+			SourceFile: req.SourceFilePath,
+			TargetFile: req.TargetFilePath,
+			TargetHost: req.TargetHost,
+			StartTime: startTime,
+			EndTime:   time.Now(),
+			Duration:  time.Since(startTime).String(),
+			Error:     fmt.Sprintf("failed to create target directory: %v", err),
+		}, err
+	}
+
+	// Create remote file
+	dstFile, err := sftpClient.Create(req.TargetFilePath)
+	if err != nil {
+		return &models.FileTransferResponse{
+			Status:    "failed",
+			SourceFile: req.SourceFilePath,
+			TargetFile: req.TargetFilePath,
+			TargetHost: req.TargetHost,
+			StartTime: startTime,
+			EndTime:   time.Now(),
+			Duration:  time.Since(startTime).String(),
+			Error:     fmt.Sprintf("failed to create target file: %v", err),
+		}, err
+	}
+	defer dstFile.Close()
+
+	// Copy file contents
+	bytesWritten, err := io.Copy(dstFile, srcFile)
+	if err != nil {
+		return &models.FileTransferResponse{
+			Status:    "failed",
+			SourceFile: req.SourceFilePath,
+			TargetFile: req.TargetFilePath,
+			TargetHost: req.TargetHost,
+			BytesWritten: bytesWritten,
+			StartTime: startTime,
+			EndTime:   time.Now(),
+			Duration:  time.Since(startTime).String(),
+			Error:     fmt.Sprintf("failed to copy file contents: %v", err),
+		}, err
+	}
+
+	// Success response
+	endTime := time.Now()
+	return &models.FileTransferResponse{
+		ID:         fmt.Sprintf("transfer-%d", time.Now().UnixNano()),
+		Status:     "completed",
+		SourceFile: req.SourceFilePath,
+		TargetFile: req.TargetFilePath,
+		TargetHost: req.TargetHost,
+		BytesWritten: bytesWritten,
+		StartTime:  startTime,
+		EndTime:    endTime,
+		Duration:   endTime.Sub(startTime).String(),
+	}, nil
+}
+EOF
+
+# Step 10: Create handlers.go
+cat > internal/api/handlers.go << EOF
+package api
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourusername/ssh-file-transfer-api/internal/models"
+	"github.com/yourusername/ssh-file-transfer-api/internal/ssh"
+)
+
+// TransferFile handles file transfer requests
+func (s *Server) TransferFile(c *gin.Context) {
+	var req models.FileTransferRequest
+	
+	// Validate request payload
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.APIError{
+			Code:    http.StatusBadRequest,
+			Message: "Invalid request payload",
+			Details: err.Error(),
+		})
+		return
+	}
+
+	// Use default SSH port if not specified
+	if req.TargetPort == 0 {
+		req.TargetPort = 22
+	}
+
+	// Create SSH client
+	username := req.Username
+	if username == "" {
+		username = s.config.SSHUsername
+	}
+
+	password := req.Password
+	if password == "" {
+		password = s.config.SSHPassword
+	}
+
+	keyPath := req.PrivateKeyPath
+	if keyPath == "" {
+		keyPath = s.config.SSHKeyPath
+	}
+
+	client, err := ssh.NewClient(username, password, keyPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.APIError{
+			Code:    http.StatusInternalServerError,
+			Message: "Failed to create SSH client",
+			Details: err.Error(),
+		})
+		return
+	}
+
+	// Execute file transfer
+	response, err := client.TransferFile(req)
+	if err != nil {
+		// If response already contains error details, use it
+		if response != nil {
+			c.JSON(http.StatusInternalServerError, response)
+			return
+		}
+		
+		c.JSON(http.StatusInternalServerError, models.APIError{
+			Code:    http.StatusInternalServerError,
+			Message: "Failed to transfer file",
+			Details: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetFileTransferStatus retrieves the status of a file transfer
+func (s *Server) GetFileTransferStatus(c *gin.Context) {
+	id := c.Param("id")
+	
+	// In a real implementation, you would look up the transfer status from a database
+	// This is a simplified example
+	c.JSON(http.StatusOK, models.FileTransferStatus{
+		ID:               id,
+		Status:           "completed",
+		PercentComplete:  100.0,
+		BytesTransferred: 1024,
+		StartTime:        time.Now().Add(-1 * time.Minute),
+		LastUpdated:      time.Now(),
+	})
+}
+
+// HealthCheck provides a basic health check endpoint
+func (s *Server) HealthCheck(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+		"time":   time.Now().Format(time.RFC3339),
+	})
+}
+EOF
+
+# Step 11: Create middlewares.go
+cat > internal/api/middlewares.go << EOF
+package api
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourusername/ssh-file-transfer-api/internal/models"
+)
+
+// Logger middleware logs all requests
+func Logger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		method := c.Request.Method
+
+		// Process request
+		c.Next()
+
+		// Log request details
+		latency := time.Since(start)
+		statusCode := c.Writer.Status()
+
+		// Determine final response status based on errors
+		if len(c.Errors) > 0 {
+			// Log errors
+			gin.DefaultErrorWriter.Write([]byte(c.Errors.String()))
+		}
+
+		gin.DefaultWriter.Write([]byte(
+			"[API] " + time.Now().Format("2006/01/02 - 15:04:05") + 
+			" | " + method + " | " + path + 
+			" | " + http.StatusText(statusCode) + 
+			" | " + latency.String() + "\n",
+		))
+	}
+}
+
+// RateLimiter middleware limits request rates
+func RateLimiter(requests int, duration time.Duration) gin.HandlerFunc {
+	// In a real implementation, you'd use a proper rate limiter
+	// This is a simplified example
+	type client struct {
+		count    int
+		lastSeen time.Time
+	}
+	
+	clients := make(map[string]*client)
+	
+	return func(c *gin.Context) {
+		ip := c.ClientIP()
+		
+		// Clean up old entries
+		now := time.Now()
+		for clientIP, clientData := range clients {
+			if now.Sub(clientData.lastSeen) > duration {
+				delete(clients, clientIP)
+			}
+		}
+		
+		// Check if client exists
+		if _, exists := clients[ip]; !exists {
+			clients[ip] = &client{count: 0, lastSeen: now}
+		}
+		
+		// Update last seen
+		clients[ip].lastSeen = now
+		
+		// Check if rate limit exceeded
+		if clients[ip].count >= requests {
+			c.JSON(http.StatusTooManyRequests, models.APIError{
+				Code:    http.StatusTooManyRequests,
+				Message: "Rate limit exceeded",
+			})
+			c.Abort()
+			return
+		}
+		
+		// Increment request count
+		clients[ip].count++
+		
+		c.Next()
+	}
+}
+
+// ErrorHandler middleware handles errors
+func ErrorHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		
+		// Check if there are any errors
+		if len(c.Errors) > 0 {
+			// Get the last error
+			err := c.Errors.Last()
+			
+			// Return appropriate error response
+			c.JSON(http.StatusInternalServerError, models.APIError{
+				Code:    http.StatusInternalServerError,
+				Message: "Internal server error",
+				Details: err.Error(),
+			})
+		}
+	}
+}
+EOF
+
+# Step 12: Create routes.go
+cat > internal/api/routes.go << EOF
+package api
+
+import (
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/yourusername/ssh-file-transfer-api/internal/config"
+)
+
+// Server represents the API server
+type Server struct {
+	router *gin.Engine
+	config *config.Config
+}
+
+// NewServer creates a new API server
+func NewServer(cfg *config.Config) *Server {
+	router := gin.Default()
+	
+	server := &Server{
+		router: router,
+		config: cfg,
+	}
+	
+	// Apply middlewares
+	router.Use(Logger())
+	router.Use(ErrorHandler())
+	router.Use(RateLimiter(cfg.RateLimitRequests, cfg.RateLimitDuration))
+	
+	// Setup routes
+	server.setupRoutes()
+	
+	return server
+}
+
+// setupRoutes configures all API routes
+func (s *Server) setupRoutes() {
+	// Health check
+	s.router.GET("/health", s.HealthCheck)
+	
+	// API v1 routes
+	v1 := s.router.Group("/api/v1")
+	{
+		// File transfer endpoints
+		transfers := v1.Group("/transfers")
+		{
+			transfers.POST("", s.TransferFile)
+			transfers.GET("/:id", s.GetFileTransferStatus)
+		}
+	}
+}
+
+// Run starts the API server
+func (s *Server) Run(addr string) error {
+	return s.router.Run(addr)
+}
+EOF
+
+# Step 13: Build and run the application
+go build -o ssh-api ./cmd/server
+./ssh-api
+
+# Step 14: Testing the API using curl
+# Health check endpoint
+curl http://localhost:8080/health
+
+# File transfer endpoint
+curl -X POST http://localhost:8080/api/v1/transfers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_host": "example.com",
+    "target_port": 22,
+    "source_file_path": "/path/to/local/file.txt",
+    "target_file_path": "/path/on/remote/server/file.txt"
+  }'
+
+# Get transfer status
+curl http://localhost:8080/api/v1/transfers/transfer-123456789
