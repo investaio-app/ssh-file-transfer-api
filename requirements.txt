@@ -1,0 +1,27 @@
+Django>=4.2,<5.0
+djangorestframework
+django-filter
+django-allauth
+django-cors-headers
+django-environ
+django-extensions
+django-redis
+django-debug-toolbar
+django-storages
+gunicorn
+psycopg2-binary  # PostgreSQL database adapter
+mysqlclient  # MySQL database adapter
+pyldap
+python-decouple
+whitenoise
+celery
+redis
+drf-yasg  # API schema generation
+daphne  # ASGI server for Django Channels
+channels
+channels-redis
+pillow  # Image handling
+boto3  # AWS S3 support
+cryptography  # Security and encryption
+requests
+httpx  # Alternative HTTP client
